@@ -1,0 +1,10 @@
+{
+  "test_samples": 15329,
+  "selected_epoch": 150,
+  "validation_threshold": 0.8025316596031189,
+  "test_roc_auc": 0.9041824119890198,
+  "test_pr_auc": 0.6069714753684874,
+  "test_precision": 0.5739583333333333,
+  "test_recall": 0.611542730299667,
+  "test_f1": 0.5921547555077915
+}

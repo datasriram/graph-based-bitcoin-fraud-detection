@@ -28,3 +28,17 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+# Python environments
+.venv/
+env/
+
+# Python testing
+.pytest_cache/
+.coverage
+
+# Local configuration
+.env
+.env.*
+
+# Streamlit secrets
+.streamlit/secrets.toml
