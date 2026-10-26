@@ -3,17 +3,17 @@ from __future__ import annotations
 
 
 import json
-import os
+import time
+import sys
 
 from pathlib import Path
 
-from typing import Optional, Tuple
+from typing import Optional
 
 
 
 import pandas as pd
 
-import requests
 
 import streamlit as st
 
@@ -32,6 +32,20 @@ DATA_DIR = BASE_DIR / "data"
 SAMPLE_NODES = DATA_DIR / "sample_nodes.csv"
 
 SAMPLE_EDGES = DATA_DIR / "sample_edges.csv"
+ARTIFACT_DIR = BASE_DIR / "validated_graphsage_export" / "artifacts"
+MODEL_PATH = ARTIFACT_DIR / "graphsage_model.pt"
+
+# Streamlit Cloud launches frontend/app.py: make project packages importable.
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+import numpy as np
+from core.pipeline import (
+    FEATURE_COUNT, PipelineInputError, build_graph_from_csv_bytes,
+    run_inference, detect_rings, build_graph_preview, make_predictions,
+)
+from model.graphsage import load_model
+
 
 
 
@@ -67,90 +81,68 @@ div[data-testid="metric-container"] {
 
 
 
-def api_health(api_url: str) -> Tuple[bool, dict]:
-
-    try:
-
-        response = requests.get(f"{api_url}/health", timeout=4)
-
-        return response.ok, response.json()
-
-    except Exception:
-
-        return False, {}
+@st.cache_resource(show_spinner="Loading validated GraphSAGE model...")
+def get_model():
+    if not MODEL_PATH.is_file():
+        raise FileNotFoundError(f"Missing model checkpoint: {MODEL_PATH}")
+    return load_model(MODEL_PATH, in_channels=FEATURE_COUNT)
 
 
-
+def get_validated_threshold() -> float:
+    path = ARTIFACT_DIR / "threshold.npy"
+    return float(np.load(path).item()) if path.exists() else 0.802532
 
 
 def read_sample_file(path: Path) -> Optional[bytes]:
-
     return path.read_bytes() if path.exists() else None
 
 
-
-
-
 def submit_pipeline(
-
-    api_url: str,
-
-    nodes_name: str,
-
     nodes_bytes: bytes,
-
-    edges_name: Optional[str],
-
     edges_bytes: Optional[bytes],
-
     *,
-
     threshold: float,
-
     graph_mode: str,
-
     k_neighbors: int,
-
     min_ring_size: int,
-
 ) -> dict:
-
-    files = {"nodes_csv": (nodes_name, nodes_bytes, "text/csv")}
-
-    if edges_bytes:
-
-        files["edges_csv"] = (edges_name or "edges.csv", edges_bytes, "text/csv")
-
-    data = {
-
-        "threshold": str(threshold),
-
-        "graph_mode": graph_mode,
-
-        "k_neighbors": str(k_neighbors),
-
-        "min_ring_size": str(min_ring_size),
-
+    model = get_model()
+    started = time.perf_counter()
+    graph = build_graph_from_csv_bytes(
+        nodes_bytes, edges_bytes, ARTIFACT_DIR,
+        graph_mode=graph_mode, k_neighbors=k_neighbors,
+    )
+    infer_started = time.perf_counter()
+    probs, preds = run_inference(model, graph, threshold=threshold)
+    inference_ms = round((time.perf_counter() - infer_started) * 1000, 2)
+    component_rings, community_rings = detect_rings(
+        graph, probs, preds, threshold=threshold, min_size=min_ring_size,
+    )
+    primary_rings = component_rings if component_rings else community_rings
+    preview = build_graph_preview(graph, probs, primary_rings, threshold=threshold)
+    flagged_nodes = {idx for ring in primary_rings for idx in ring["node_indices"]}
+    return {
+        "summary": {
+            "num_nodes": graph.num_nodes,
+            "num_edges": graph.num_edges,
+            "x_shape": graph.debug["x_shape"],
+            "edge_index_shape": graph.debug["edge_index_shape"],
+            "graph_method": graph.graph_method,
+            "threshold": float(threshold),
+            "predicted_illicit": int(preds.sum()),
+            "illicit_pct": round(float(preds.mean()) * 100, 2) if graph.num_nodes else 0.0,
+            "total_rings": len(primary_rings),
+            "total_flagged_ring_nodes": len(flagged_nodes),
+            "inference_ms": inference_ms,
+            "total_pipeline_ms": round((time.perf_counter() - started) * 1000, 2),
+        },
+        "debug": graph.debug,
+        "predictions": make_predictions(graph, probs, preds),
+        "rings": primary_rings,
+        "component_rings": component_rings,
+        "community_rings": community_rings,
+        "graph": preview,
     }
-
-    response = requests.post(f"{api_url}/full-pipeline", files=files, data=data, timeout=240)
-
-    if not response.ok:
-
-        try:
-
-            detail = response.json().get("detail", response.text)
-
-        except Exception:
-
-            detail = response.text
-
-        raise RuntimeError(f"API {response.status_code}: {detail}")
-
-    return response.json()
-
-
-
 
 
 def ring_graph_html(result: dict, focus_ring_id: Optional[int] = None) -> str:
@@ -709,31 +701,23 @@ layout(); renderList(); frame();
 
 
 
+try:
+    _model = get_model()
+    model_ready = True
+except Exception as exc:
+    model_ready = False
+    st.error(f"Model failed to load: {exc}")
+
 with st.sidebar:
-
-    st.markdown("### Connection")
-
-    api_url = st.text_input("API URL", value=os.getenv("API_URL", "http://127.0.0.1:8000")).rstrip("/")
-
-    alive, health = api_health(api_url)
-
-    if alive and health.get("model_loaded"):
-
-        st.success("API connected")
-
-    elif alive:
-
-        st.warning("API connected, model not loaded")
-
+    st.markdown("### Model")
+    if model_ready:
+        st.success("Validated GraphSAGE loaded locally")
     else:
-
-        st.error("API offline")
-
-
+        st.error("Model unavailable")
 
     st.markdown("### Inference")
 
-    threshold = st.number_input("Fraud classification threshold", min_value=0.0, max_value=1.0, value=0.802532, step=0.001, format="%.6f")
+    threshold = st.number_input("Fraud classification threshold", min_value=0.0, max_value=1.0, value=get_validated_threshold(), step=0.001, format="%.6f")
 
     graph_mode = st.selectbox("Graph mode", ["uploaded", "auto", "knn", "hybrid"], index=0, help="Use actual transaction edges for the validated workflow. KNN/hybrid results were not independently evaluated.")
 
@@ -809,7 +793,7 @@ else:
 
 
 
-run = st.button("Run analysis", type="primary", disabled=(not alive or not health.get("model_loaded") or not nodes_bytes or (graph_mode == "uploaded" and not edges_bytes)))
+run = st.button("Run analysis", type="primary", disabled=(not model_ready or not nodes_bytes or (graph_mode == "uploaded" and not edges_bytes)))
 
 
 
@@ -820,15 +804,7 @@ if run:
         with st.spinner("Running GraphSAGE inference"):
 
             result = submit_pipeline(
-
-                api_url,
-
-                nodes_name,
-
                 nodes_bytes,
-
-                edges_name,
-
                 edges_bytes,
 
                 threshold=threshold,
