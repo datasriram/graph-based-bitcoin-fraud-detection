@@ -1,70 +1,80 @@
 # Bitcoin Fraud Detection & Graph Analytics
 
-**GraphSAGE · PyTorch Geometric · FastAPI · Streamlit**
+**GraphSAGE · PyTorch Geometric · Streamlit**
 
-An end-to-end machine learning application for scoring the risk of Bitcoin transactions and exploring *suspected* high-risk transaction clusters. It uses a four-layer GraphSAGE graph neural network (GNN) trained on the Elliptic Bitcoin transaction dataset, served through a FastAPI backend and an interactive Streamlit dashboard.
+An interactive machine learning application that scores Bitcoin transactions for illicit-activity risk and explores **suspected high-risk transaction clusters**. A four-layer GraphSAGE graph neural network (GNN) is trained on the [Elliptic Bitcoin Dataset](https://www.kaggle.com/datasets/ellipticco/elliptic-data-set). The Streamlit application runs model inference directly—**no separate API server is required**.
 
-> **Important:** A high-risk prediction or connected component is not proof of fraud or coordinated criminal activity. This is a research/portfolio application, not a production AML decision system.
+> **Important:** A high-risk prediction or connected component is not proof of fraud or coordinated criminal activity. This is a research and portfolio demonstration, not a production anti-money-laundering decision system.
 
 ## Features
 
 - Transaction-level illicit-risk scores and binary predictions.
-- Interactive transaction graph with cluster exploration, zoom, pan, and node details.
-- Suspected high-risk cluster discovery using connected components and community detection.
-- CSV-based inference through FastAPI and Streamlit.
-- Bundled sample node and edge CSVs for a quick demo.
-- Adjustable decision threshold and minimum cluster size.
-- Optional experimental KNN and hybrid graph-construction modes (not covered by the reported test metrics).
+- Interactive graph exploration with zoom, pan, node inspection, and cluster selection.
+- Suspected high-risk cluster exploration using connected components and community detection.
+- Upload transaction-node and transaction-edge CSVs, or use the bundled sample data.
+- Adjustable classification threshold and minimum cluster size.
+- Optional experimental KNN and hybrid graph modes. **Reported test metrics do not validate these alternative modes.**
+- Local, in-process GraphSAGE inference within Streamlit.
 
-## Architecture
+## How it works
 
 ```text
 Nodes CSV + Edges CSV
-          |
-          v
-Streamlit interface ---> FastAPI (/full-pipeline)
-                              |
-                              v
-                 Validate data and map IDs
-                              |
-                              v
-                 Apply saved training-only
-                 imputation and normalization
-                              |
-                              v
-                 Build transaction graph
-                              |
-                              v
-                 GraphSAGE inference
-                              |
-                              v
-                 Scores + suspected clusters
-                              |
-                              v
-                 Interactive visualization
+        |
+        v
+Streamlit interface
+        |
+        v
+Validate inputs and map transaction IDs
+        |
+        v
+Apply saved training-period imputation and normalization
+        |
+        v
+Construct transaction graph
+        |
+        v
+GraphSAGE model inference
+        |
+        v
+Risk scores + suspected high-risk clusters
+        |
+        v
+Interactive graph and prediction tables
 ```
 
-The model consists of four GraphSAGE convolutions with output dimensions **256 → 128 → 64 → 2**, with batch normalization, ReLU, and dropout (`0.4`) between layers. Training uses class-weighted focal loss to address label imbalance. Total trainable parameters: **168,514**.
+### Model architecture
+
+| Layer | Input features | Output features |
+|---|---:|---:|
+| GraphSAGE convolution 1 | 166 | 256 |
+| GraphSAGE convolution 2 | 256 | 128 |
+| GraphSAGE convolution 3 | 128 | 64 |
+| GraphSAGE convolution 4 | 64 | 2 |
+
+The model uses batch normalization, ReLU, and dropout (`0.4`) between the convolution layers. Training uses class-weighted focal loss to address class imbalance. **Trainable parameters: 168,514.**
+
+**Stack:** Python, PyTorch, PyTorch Geometric, Streamlit, NetworkX, NumPy, and Pandas.
 
 ## Dataset
 
-[Elliptic Bitcoin Dataset on Kaggle](https://www.kaggle.com/datasets/ellipticco/elliptic-data-set)
+The [Elliptic Bitcoin Dataset](https://www.kaggle.com/datasets/ellipticco/elliptic-data-set) represents Bitcoin transactions as graph nodes, with directed edges between related transactions.
 
 | Property | Value |
 |---|---:|
 | Transactions | 203,769 |
 | Transaction edges | 234,355 |
-| Input features per transaction | 166 |
+| Model input features | 166 |
 | Time steps | 49 |
 | Labeled illicit | 4,545 |
 | Labeled licit | 42,019 |
 | Unlabeled | 157,205 |
 
-The 166 model inputs comprise the time-step feature and 165 transaction features. Labels are interpreted as `1 = illicit`, `2 = licit`, and `unknown = unlabeled`; unlabeled nodes can contribute graph context but are excluded from supervised loss and labeled evaluation.
+The 166 inputs consist of the time-step feature and 165 transaction features. Original labels use `1 = illicit`, `2 = licit`, and `unknown = unlabeled`. Unlabeled nodes can supply graph context but are excluded from supervised training loss and labeled evaluation.
 
 ## Evaluation methodology
 
-To avoid selecting a model using test-set results, the updated experiment uses a **chronological split**:
+The corrected experiment uses a **chronological split** rather than choosing the checkpoint or threshold using test results.
 
 | Split | Time steps | Labeled transactions | Illicit | Licit |
 |---|---|---:|---:|---:|
@@ -72,125 +82,103 @@ To avoid selecting a model using test-set results, the updated experiment uses a
 | Validation | 31–35 | 4,330 | 690 | 3,640 |
 | Test | 36–49 | 15,329 | 901 | 14,428 |
 
-- Missing-value imputation and min/range normalization are fitted **only on training-period nodes**, then reused in validation, testing, and application inference.
-- The training graph contains nodes and edges available through time step 30; validation adds nodes and edges through step 35; testing uses the full graph through step 49. This is **chronological snapshot evaluation**, not a per-transaction online replay.
-- The checkpoint is selected by **validation average precision (PR-AUC)**, evaluated every 10 epochs.
-- The classification threshold is selected by maximizing **validation F1** and then held fixed for testing.
-- The held-out test period is used for final reported metrics, not for checkpoint or threshold selection.
+- Imputation and min/range normalization are fitted using **training-period nodes only**; the same saved parameters are used for validation, test, and application inference.
+- Training uses graph data through time step 30; validation uses a graph snapshot through step 35; the held-out test uses a snapshot through step 49. This is **chronological snapshot evaluation**, not a per-transaction streaming replay.
+- The best checkpoint is selected using **validation average precision (PR-AUC)**.
+- The decision threshold is selected by maximizing **validation F1** and kept fixed during final test evaluation.
+- The held-out test period is not used to select the checkpoint or threshold.
 
-### Results: held-out test period
+### Held-out test results
 
-| Metric | Result |
+| Metric | Score |
 |---|---:|
 | ROC-AUC | **0.9042** |
 | Average precision / PR-AUC | **0.6070** |
-| Illicit-class precision | **0.5740** |
-| Illicit-class recall | **0.6115** |
-| Illicit-class F1 | **0.5922** |
+| Illicit precision | **0.5740** |
+| Illicit recall | **0.6115** |
+| Illicit F1 | **0.5922** |
 | Accuracy | 0.9505 |
 | Validation-selected threshold | **0.802532** |
 | Selected epoch | **150** |
 
-Test confusion matrix (rows = actual, columns = predicted):
+**Test confusion matrix** (rows: actual class; columns: predicted class):
 
 | | Predicted licit | Predicted illicit |
 |---|---:|---:|
 | Actual licit | 14,019 | 409 |
 | Actual illicit | 350 | 551 |
 
-The model detected **551 of 901** labeled illicit transactions in the held-out period and missed **350**. In this imbalanced setting, PR-AUC, precision, and recall are more informative than accuracy alone.
+The model identified **551 of 901** labeled illicit transactions in the held-out test period. Because the classes are imbalanced, PR-AUC, precision, and recall convey more than accuracy alone. Validation PR-AUC was **0.9153** and validation F1 was **0.8743**, indicating a substantial drop in performance on later transactions.
 
-Validation results were higher (PR-AUC **0.9153**, F1 **0.8743**). That gap highlights limitations in generalizing to later time periods; these test results should not be interpreted as live operational performance.
-
-The checkpoint, saved preprocessing values, and selected threshold are under `validated_graphsage_export/artifacts/`; corresponding results are under `validated_graphsage_export/evaluation/`.
+The checkpoint and fitted preprocessing parameters are in `validated_graphsage_export/artifacts/`; evaluation summaries are in `validated_graphsage_export/evaluation/`. The corrected experiment notebook is `notebooks/Bitcoin_GNN_Leakage_Controlled.ipynb`.
 
 ## Run locally
 
-Use **Python 3.13**, which was used to test the application locally. Run the following commands from the repository root.
+**Python 3.13** was used for local testing. Run commands from the repository root.
 
 ```powershell
-# Clone
 git clone https://github.com/datasriram/graph-based-bitcoin-fraud-detection.git
 cd graph-based-bitcoin-fraud-detection
 
-# Create and activate a virtual environment (Windows PowerShell)
 py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-
-# Install dependencies
 python -m pip install -r requirements.txt
-```
-
-If PowerShell blocks environment activation, the commands can instead be run with `.\.venv\Scripts\python.exe` without activating.
-
-Start the backend in the first terminal:
-
-```powershell
-python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
-```
-
-Start the frontend in another terminal (with the same environment activated):
-
-```powershell
 python -m streamlit run frontend/app.py
 ```
 
-Open **http://localhost:8501**. The API health endpoint is **http://127.0.0.1:8000/health**, and interactive API documentation is at **http://127.0.0.1:8000/docs**.
+Open the local Streamlit URL shown in the terminal (typically `http://localhost:8501`). **FastAPI and a second terminal are not required.** If PowerShell prevents activation, use `.\.venv\Scripts\python.exe` for the installation and launch commands instead.
 
-### Try the included sample
+### Try the sample data
 
-1. Leave **Use sample CSVs** enabled in the Streamlit sidebar.
-2. Select **uploaded** graph mode (the default).
-3. Keep the validation-selected threshold (`0.802532`) initially.
-4. Click **Run analysis** to view scores, clusters, and the interactive graph.
+1. Leave **Use sample CSVs** enabled.
+2. Select **uploaded** graph mode (recommended).
+3. Keep the validation-selected threshold (`0.802532`) for an initial run.
+4. Click **Run analysis** to view transaction scores, suspected clusters, and the interactive graph.
 
-For custom data, upload both a nodes CSV and the corresponding transaction edges CSV.
+The sample demonstrates application functionality; its predictions are **not** a reproduction of the full chronological test benchmark.
 
-## CSV format
+### CSV inputs
 
-**Nodes:** `txId,time_step,f0,f1,...,f164` (166 features after the transaction ID). An optional class/label column can be present, but it is not used to generate predictions.
+**Nodes CSV:** `txId,time_step,f0,f1,...,f164` (166 features after the transaction ID). An optional label column may be present but is not used to calculate predictions.
 
-**Edges:** `txId1,txId2`, identifying linked transactions present in the nodes file. Uploaded edges are the **recommended and validated graph construction family**.
+**Edges CSV:** `txId1,txId2`, referencing transaction IDs in the uploaded nodes file.
 
-The default mode requires an edges CSV. Other modes (`auto`, `knn`, `hybrid`) are available for experimentation, but their predictions **must not be represented as having the same validated test performance**. Predictions on small uploaded subgraphs can also differ from predictions made with full chronological historical graph context.
+The default **uploaded** mode requires transaction edges. Experimental `auto`, `knn`, and `hybrid` graph modes may produce different results and have not been benchmarked against the reported held-out test metrics. Predictions on small subgraphs may differ from full-snapshot predictions because the graph context changes.
 
-## API endpoints
+## Deploy on Streamlit Community Cloud
 
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/health` | GET | Backend and model-loading status |
-| `/model-info` | GET | Architecture, threshold, and evaluation summary |
-| `/full-pipeline` | POST | Predictions, graph preview, and suspected clusters |
-| `/predict` | POST | Transaction-level predictions |
-| `/detect-rings` | POST | Suspected high-risk clusters and graph preview |
+1. Push the standalone application and its dependencies to GitHub.
+2. Open [Streamlit Community Cloud](https://share.streamlit.io/) and create an app from the repository.
+3. Select repository `datasriram/graph-based-bitcoin-fraud-detection`, branch `main`, and entrypoint **`frontend/app.py`**.
+4. Select a compatible Python version (locally tested with **3.13**) and deploy.
+5. Use the bundled sample data to verify model loading, predictions, and graph visualization.
 
-Inference endpoints accept multipart form uploads (`nodes_csv`, `edges_csv`) and optional `threshold`, `graph_mode`, `k_neighbors`, and `min_ring_size` parameters.
+There is no API URL, FastAPI server, Render service, or external model API key to configure. Free hosting has resource limits; large user-uploaded transaction graphs may exceed the available memory or compute budget.
 
-## Repository layout
+## Repository structure
 
 ```text
-api/                            FastAPI backend
-core/                           CSV processing, graph building, inference
-frontend/                       Streamlit interface and graph visualization
-model/                          GraphSAGE network and checkpoint loader
-data/                           Sample nodes and edges
-notebooks/                      Training notebook(s)
+core/                             CSV processing, preprocessing, graph building, inference
+frontend/app.py                   Standalone Streamlit app and interactive visualization
+model/                            GraphSAGE architecture and checkpoint loader
+data/                             Sample nodes and edges
+notebooks/Bitcoin_GNN_Leakage_Controlled.ipynb
 validated_graphsage_export/
-  artifacts/                    Validated checkpoint, normalizers, threshold
-  evaluation/                   Held-out metrics and training history
-requirements.txt                Application dependencies
+  artifacts/                      Model checkpoint, preprocessing values, threshold
+  evaluation/                     Held-out test metrics and training history
+screenshots/                      Application screenshots (if retained)
+requirements.txt                  Streamlit inference dependencies
 README.md
+.gitignore
 ```
-
-Legacy experiments and generated outputs may also be retained in the repository for reference; the application uses the **validated_graphsage_export** artifacts. **Note:** the legacy notebook in `notebooks/` may still contain the earlier evaluation procedure; do not rerun it as a reproduction of these validated metrics until the corrected Colab notebook is saved and committed.
 
 ## Limitations and future work
 
-- The held-out benchmark uses chronological graph snapshots with historical context, **not true real-time transaction arrival**.
-- A cluster of high-risk transactions does not establish a fraud ring; analyst verification would be needed.
-- Threshold performance can shift with fraud prevalence and transaction behavior.
-- Results for arbitrary uploaded subgraphs and KNN/hybrid edges have not been independently benchmarked.
-- A simple feature-only baseline and deeper analysis of temporal shift would be worthwhile future comparisons.
+- Chronological test **snapshots** retain graph context available at the snapshot endpoint; the benchmark is not strict online inference at each transaction's arrival time.
+- High-risk connected components are **suspected clusters**, not confirmed fraud rings.
+- The threshold and performance may shift as fraud patterns and class prevalence change.
+- Arbitrary user-uploaded subgraphs and synthetic KNN/hybrid edges have not been independently validated.
+- Further work could compare feature-only baselines and examine temporal generalization and probability calibration.
 
 ## Author
 
@@ -198,4 +186,4 @@ Sriram Tummala
 
 ## Usage
 
-Academic and portfolio demonstration. Dataset usage is subject to the source dataset's terms. No open-source license is asserted here unless a separate license file is added.
+Academic and portfolio demonstration. Dataset use is subject to the source dataset's terms. No open-source license is asserted unless a separate license file is added.
